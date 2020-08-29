@@ -1,0 +1,11 @@
+[mastodon]
+client_id = "abc"
+client_secret = "def"
+access_token = "ghi"
+api_base_url = "mstdn.netwhood.online"
+
+[telegram]
+api_id = "123123"
+api_hash = "qwerty"
+channels = [] # handles of channels without "@"
+session_file = "/path/to/session/file"

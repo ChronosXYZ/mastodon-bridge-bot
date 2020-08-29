@@ -1,0 +1,6 @@
+/.vscode
+/.mypy_cache
+/.dev-config.toml
+*.session
+*.session-journal
+/.idea

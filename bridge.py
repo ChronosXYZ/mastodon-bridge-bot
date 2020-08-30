@@ -1,4 +1,8 @@
 import asyncio
+import os
+import uuid
+from io import BytesIO
+
 import toml
 import argparse
 from mastodon import Mastodon
@@ -38,7 +42,17 @@ class BridgeBot:
             if channel.broadcast:
                 if channel.username in self.config["telegram"]["channels"]:
                     print("dobbry vechur")
-                    self.mastodon_client.toot(event.message.text)
+                    text: str = event.message.text
+                    if event.message.forward:
+                        text = f"[from {event.message.forward.chat.title} (https://t.me/{event.message.forward.chat.username})]\n\n" + text
+                    if event.message.photo:
+                        temp_image_name = uuid.uuid4()
+                        await self.tg_client.download_media(event.message.photo, f"/tmp/{temp_image_name}.jpg")
+                        mstdn_media_meta = self.mastodon_client.media_post(f"/tmp/{temp_image_name}.jpg")
+                        self.mastodon_client.status_post(text, media_ids=[mstdn_media_meta])
+                        os.remove(f"/tmp/{temp_image_name}.jpg")
+                        return
+                    self.mastodon_client.toot(text)
 
 
 if __name__ == '__main__':

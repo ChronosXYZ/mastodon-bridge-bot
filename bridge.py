@@ -3,6 +3,7 @@ import asyncio
 import logging
 import os
 import uuid
+import re
 
 import toml
 from mastodon import Mastodon
@@ -15,9 +16,18 @@ from telethon.utils import get_extension
 logging.basicConfig(level=logging.INFO)
 
 class BridgeBot:
+
     def __init__(self, cfg: dict):
+        # RegExps
+        self.re_md_links = re.compile(r'\[(.+)\]\((https?:\/\/[\w\d./?=#&-]+)\)')
+        self.re_md_bold = re.compile(r'\*\*(.+)\*\*')
+        self.re_md_italic = re.compile(r'__(.+)__')
+        self.re_md_strike = re.compile(r'~~(.+)~~')
+        self.re_md_mono = re.compile(r'`(.+)`')
+        # Config init
         self.config = cfg
         self.mastodon_clients = {}
+        self.mastodon_clients_visibility = {}
         self.tg_mstdn_mappings = {}
         for acc in cfg["mastodon"]["accounts"]:
             mastodon_client = Mastodon(
@@ -27,7 +37,10 @@ class BridgeBot:
                 api_base_url=acc["api_base_url"]
             )
             self.mastodon_clients[acc["name"]] = mastodon_client
-
+            try: 
+              self.mastodon_clients_visibility[acc["name"]] = acc["visibility"]
+            except KeyError:
+              self.mastodon_clients_visibility[acc["name"]] = None
         for m in cfg["mastodon"]["mappings"]:
             if self.tg_mstdn_mappings.get("tg_channel_handle", None) is None:
                 self.tg_mstdn_mappings[m["tg_channel_handle"]] = []
@@ -56,31 +69,72 @@ class BridgeBot:
                     if event.message.grouped_id is not None:
                         logging.warning("Albums isn't supported yet")
                         return
-                    logging.debug("dobbry vechur")
                     logging.info(f"Catched new post from telegram channel {channel.username}")
-                    text: str = event.message.text
-                    if event.message.forward:
-                        logging.debug("The current post is forwarded")
-                        text = f"[from {event.message.forward.chat.title} (https://t.me/{event.message.forward.chat.username})]\n\n" + text
+                    # Common Mastodon message limit size. Change if you increased this limit.
+                    mstdn_post_limit = 500
+                    #full_text = event.message.raw_text
+                    full_text = event.message.text
+                    full_text = re.sub(self.re_md_links, r'\g<1> \g<2>', full_text)
+                    full_text = re.sub(self.re_md_bold, r'\g<1>', full_text)
+                    full_text = re.sub(self.re_md_italic, r'\g<1>', full_text)
+                    full_text = re.sub(self.re_md_strike, r'\g<1>', full_text)
+                    full_text = re.sub(self.re_md_mono, r'\g<1>', full_text)
+                    # URL of Telegram message
+                    tg_message_url = f"[https://t.me/{channel.username}/" + str(event.message.id) + "]\n\n"
+                    if event.message.file and not (event.message.photo or event.message.video or event.message.gif):
+                      full_text = full_text + "\n\n[К оригинальному посту приложен файл " + event.message.file.name + "]"
+                    # Size of full text
+                    full_text_size = len(full_text)
+                    # Mastodon max post size with TG message URL
+                    mstdn_post_size = mstdn_post_limit - len(tg_message_url)
+                    # Initial vars
+                    long_post_tail = ''
+                    reply_start = 0
+                    reply_end = 0
+                    # Post text if tg message lenght is lt mstdn post limit
+                    post_text: str =  tg_message_url + full_text[reply_start:mstdn_post_size]
+                    # Set reply_start to non zero for future chunking and make mstdn post with continuaniton note
+                    if full_text_size > mstdn_post_size:
+                        long_post_tail = "\n\n[Откройте оригинальный пост по ссылке, либо прочитайте продолжение в ответах к посту.]"
+                        mstdn_post_size = mstdn_post_size - len(long_post_tail)
+                        reply_start = full_text.rfind(' ', reply_start, mstdn_post_size)
+                        post_text: str =  tg_message_url + full_text[0:reply_start] + long_post_tail
                     temp_file_path: str = ""
+                    # Downloading media if tg post contains it
                     if (event.message.photo or event.message.video or event.message.gif) and not hasattr(event.message.media, "webpage"):
-                        logging.debug("Post contains the media, downloading it...")
+                        logging.info("Post contains the media, downloading it...")
                         temp_file_name = uuid.uuid4()
                         temp_file_path = f"/tmp/{temp_file_name}{get_extension(event.message.media)}"
                         await self.tg_client.download_media(event.message.media, temp_file_path)
+                    # Starting to post messages
                     for mstdn_acc_name in self.tg_mstdn_mappings[channel.username]:
                         if self.mastodon_clients.get(mstdn_acc_name, None) is None:
                             logging.error(f"{mstdn_acc_name} doesn't exists in mastodon.accounts section of config!")
                             return
+                        # Make current client with config
                         current_mastodon_client = self.mastodon_clients[mstdn_acc_name]
+                        current_mstdn_acc_visibility = self.mastodon_clients_visibility[mstdn_acc_name]
+                        # Attach media if tg post contains it
                         if temp_file_path != "":
-                            mstdn_media_meta = current_mastodon_client.media_post(temp_file_path)
-                            current_mastodon_client.status_post(text, media_ids=[mstdn_media_meta])
+                          mstdn_media_meta = current_mastodon_client.media_post(temp_file_path)
                         else:
-                            current_mastodon_client.toot(text)
+                          mstdn_media_meta = None
+                        # First root mstdn post
+                        reply_to = current_mastodon_client.status_post(post_text, media_ids=[mstdn_media_meta], visibility=current_mstdn_acc_visibility)
+                        tg_message_url = f"[Продолжение https://t.me/{channel.username}/" + str(event.message.id) + "]\n\n"
+                        # Chunking post into mstdn limit chunks and reply to root post
+                        while reply_start + mstdn_post_limit < full_text_size:
+                            reply_end = full_text.rfind(' ', reply_start, reply_start + mstdn_post_limit - len(tg_message_url))
+                            post_text: str =  tg_message_url + full_text[reply_start+1:reply_end]
+                            reply_to = current_mastodon_client.status_post(post_text, in_reply_to_id=reply_to, visibility=current_mstdn_acc_visibility)
+                            reply_start = reply_end
+                        # Final chunk to reply to root post
+                        if reply_start > 0:
+                            post_text: str =  tg_message_url + full_text[reply_start+1:full_text_size]
+                            reply_to = current_mastodon_client.status_post(post_text, in_reply_to_id=reply_to, visibility=current_mstdn_acc_visibility)
+                    # Delete media attach
                     if temp_file_path != "":
                         os.remove(temp_file_path)
-
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()

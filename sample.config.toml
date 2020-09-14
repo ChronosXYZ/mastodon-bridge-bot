@@ -2,16 +2,17 @@
     account_name = "ChronosX"
     tg_channel_handle = "ChronosX_Channel"
 
-[[mastodon.mappings]]
-    account_name = "floppy"
-    tg_channel_handle = "netwhood_news"
-
 [[mastodon.accounts]]
     name = "ChronosX"
     client_id = "abc"
     client_secret = "def"
     access_token = "ghi"
     api_base_url = "mstdn.netwhood.online"
+
+
+[[mastodon.mappings]]
+    account_name = "floppy"
+    tg_channel_handle = "netwhood_news"
 
 [[mastodon.accounts]]
     name = "floppy"
@@ -24,3 +25,4 @@
     api_id = "123123"
     api_hash = "qwerty"
     session_file = "/path/to/session/file"
+    channels = ['netwhood_news', 'ChronosX_Channel']

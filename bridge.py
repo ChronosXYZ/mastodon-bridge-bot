@@ -19,11 +19,8 @@ class BridgeBot:
 
     def __init__(self, cfg: dict):
         # RegExps
-        self.re_md_links = re.compile(r'\[(.+)\]\((https?:\/\/[\w\d./?=#&-]+)\)')
-        self.re_md_bold = re.compile(r'\*\*(.+)\*\*')
-        self.re_md_italic = re.compile(r'__(.+)__')
-        self.re_md_strike = re.compile(r'~~(.+)~~')
-        self.re_md_mono = re.compile(r'`(.+)`')
+        self.re_md_links = re.compile(r'\[([\w\d\s\-,?!.]+)\]\((https?:\/\/[\w\d./?=#&-]+)\)')
+        self.re_md_media_link = re.compile(r'^\[\]\(https?:\/\/telegra.ph[\w\d./?=#&-]+\)')
         # Config init
         self.config = cfg
         self.mastodon_clients = {}
@@ -74,11 +71,12 @@ class BridgeBot:
                     mstdn_post_limit = 500
                     #full_text = event.message.raw_text
                     full_text = event.message.text
+                    full_text = re.sub(self.re_md_media_link, '', full_text)
                     full_text = re.sub(self.re_md_links, r'\g<1> \g<2>', full_text)
-                    full_text = re.sub(self.re_md_bold, r'\g<1>', full_text)
-                    full_text = re.sub(self.re_md_italic, r'\g<1>', full_text)
-                    full_text = re.sub(self.re_md_strike, r'\g<1>', full_text)
-                    full_text = re.sub(self.re_md_mono, r'\g<1>', full_text)
+                    full_text = full_text.replace('**', '')
+                    full_text = full_text.replace('__', '')
+                    full_text = full_text.replace('~~', '')
+                    full_text = full_text.replace('`', '')
                     # URL of Telegram message
                     tg_message_url = f"[https://t.me/{channel.username}/" + str(event.message.id) + "]\n\n"
                     if event.message.file and not (event.message.photo or event.message.video or event.message.gif):
@@ -94,11 +92,13 @@ class BridgeBot:
                     # Post text if tg message lenght is lt mstdn post limit
                     post_text: str =  tg_message_url + full_text[reply_start:mstdn_post_size]
                     # Set reply_start to non zero for future chunking and make mstdn post with continuaniton note
+                    logging.debug("full_text_size: " + str(full_text_size))
                     if full_text_size > mstdn_post_size:
                         long_post_tail = "\n\n[Откройте оригинальный пост по ссылке, либо прочитайте продолжение в ответах к посту.]"
                         mstdn_post_size = mstdn_post_size - len(long_post_tail)
                         reply_start = full_text.rfind(' ', reply_start, mstdn_post_size)
                         post_text: str =  tg_message_url + full_text[0:reply_start] + long_post_tail
+                    logging.debug("start reply_start: " + str(reply_start))
                     temp_file_path: str = ""
                     # Downloading media if tg post contains it
                     if (event.message.photo or event.message.video or event.message.gif) and not hasattr(event.message.media, "webpage"):
@@ -120,16 +120,24 @@ class BridgeBot:
                         else:
                           mstdn_media_meta = None
                         # First root mstdn post
+                        
                         reply_to = current_mastodon_client.status_post(post_text, media_ids=[mstdn_media_meta], visibility=current_mstdn_acc_visibility)
                         tg_message_url = f"[Продолжение https://t.me/{channel.username}/" + str(event.message.id) + "]\n\n"
                         # Chunking post into mstdn limit chunks and reply to root post
+                        i = 0
                         while reply_start + mstdn_post_limit < full_text_size:
-                            reply_end = full_text.rfind(' ', reply_start, reply_start + mstdn_post_limit - len(tg_message_url))
+                            logging.debug("while reply_start:" + str(reply_start)) 
+                            reply_end = full_text.rfind(' ', reply_start, reply_start + mstdn_post_limit - (len(tg_message_url)*2))
                             post_text: str =  tg_message_url + full_text[reply_start+1:reply_end]
                             reply_to = current_mastodon_client.status_post(post_text, in_reply_to_id=reply_to, visibility=current_mstdn_acc_visibility)
                             reply_start = reply_end
+                            i = i + 1
+                            if i > 15:
+                              logging.debug("Breaking very long reply thread") 
+                              break
                         # Final chunk to reply to root post
                         if reply_start > 0:
+                            logging.debug("final reply_start: " + str(reply_start))
                             post_text: str =  tg_message_url + full_text[reply_start+1:full_text_size]
                             reply_to = current_mastodon_client.status_post(post_text, in_reply_to_id=reply_to, visibility=current_mstdn_acc_visibility)
                     # Delete media attach

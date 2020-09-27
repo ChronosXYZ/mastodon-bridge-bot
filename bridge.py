@@ -19,8 +19,7 @@ class BridgeBot:
 
     def __init__(self, cfg: dict):
         # RegExps
-        self.re_md_links = re.compile(r'\[([\w\d\s\-,?!.]+)\]\((https?:\/\/[\w\d./?=#&-]+)\)')
-        self.re_md_media_link = re.compile(r'^\[\]\(https?:\/\/telegra.ph[\w\d./?=#&-]+\)')
+        self.re_md_links = re.compile(r'\[(.*?)\]\((https?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+)\)')
         # Config init
         self.config = cfg
         self.mastodon_clients = {}
@@ -69,14 +68,14 @@ class BridgeBot:
                     logging.info(f"Catched new post from telegram channel {channel.username}")
                     # Common Mastodon message limit size. Change if you increased this limit.
                     mstdn_post_limit = 500
-                    #full_text = event.message.raw_text
                     full_text = event.message.text
-                    full_text = re.sub(self.re_md_media_link, '', full_text)
-                    full_text = re.sub(self.re_md_links, r'\g<1> \g<2>', full_text)
+                    # Uncomment for debug
+                    #print(full_text)
                     full_text = full_text.replace('**', '')
                     full_text = full_text.replace('__', '')
                     full_text = full_text.replace('~~', '')
                     full_text = full_text.replace('`', '')
+                    full_text = re.sub(self.re_md_links, r'\g<1> \g<2> ', full_text)
                     # URL of Telegram message
                     tg_message_url = f"[https://t.me/{channel.username}/" + str(event.message.id) + "]\n\n"
                     if event.message.file and not (event.message.photo or event.message.video or event.message.gif):
@@ -94,7 +93,7 @@ class BridgeBot:
                     # Set reply_start to non zero for future chunking and make mstdn post with continuaniton note
                     logging.debug("full_text_size: " + str(full_text_size))
                     if full_text_size > mstdn_post_size:
-                        long_post_tail = "\n\n[Откройте оригинальный пост по ссылке, либо прочитайте продолжение в ответах к посту.]"
+                        long_post_tail = "\n\n[Откройте пост по ссылке или прочитайте продолжение в обсуждении]"
                         mstdn_post_size = mstdn_post_size - len(long_post_tail)
                         reply_start = full_text.rfind(' ', reply_start, mstdn_post_size)
                         post_text: str =  tg_message_url + full_text[0:reply_start] + long_post_tail
@@ -120,19 +119,23 @@ class BridgeBot:
                         else:
                           mstdn_media_meta = None
                         # First root mstdn post
-                        
                         reply_to = current_mastodon_client.status_post(post_text, media_ids=[mstdn_media_meta], visibility=current_mstdn_acc_visibility)
                         tg_message_url = f"[Продолжение https://t.me/{channel.username}/" + str(event.message.id) + "]\n\n"
                         # Chunking post into mstdn limit chunks and reply to root post
-                        i = 0
+                        emergency_break = 0
+                        emergency_break_limit = 14
                         while reply_start + mstdn_post_limit < full_text_size:
                             logging.debug("while reply_start:" + str(reply_start)) 
-                            reply_end = full_text.rfind(' ', reply_start, reply_start + mstdn_post_limit - (len(tg_message_url)*2))
+                            reply_end = full_text.rfind(' ', reply_start, reply_start + mstdn_post_limit - len(tg_message_url)*2)
+                            if reply_end == reply_start:
+                              reply_end = reply_start + mstdn_post_limit - len(tg_message_url)*2
+                            logging.debug("while reply_end:" + str(reply_end))
                             post_text: str =  tg_message_url + full_text[reply_start+1:reply_end]
                             reply_to = current_mastodon_client.status_post(post_text, in_reply_to_id=reply_to, visibility=current_mstdn_acc_visibility)
                             reply_start = reply_end
-                            i = i + 1
-                            if i > 15:
+                            # Emergency break for long or endlessly looped posts
+                            emergency_break = emergency_break + 1
+                            if emergency_break >= emergency_break_limit:
                               logging.debug("Breaking very long reply thread") 
                               break
                         # Final chunk to reply to root post

@@ -6,7 +6,8 @@ import uuid
 import re
 
 import toml
-from mastodon import Mastodon
+# from mastodon import Mastodon
+import atoot
 from telethon import TelegramClient, events
 from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.functions.contacts import ResolveUsernameRequest
@@ -16,8 +17,9 @@ from telethon.utils import get_extension
 logging.basicConfig(level=logging.INFO)
 
 class BridgeBot:
+    async def __new__(cls, cfg: dict):
+        self = super().__new__(cls)
 
-    def __init__(self, cfg: dict):
         # RegExps
         self.re_md_links = re.compile(r'\[(.*?)\]\((https?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+)\)')
         # Config init
@@ -26,11 +28,11 @@ class BridgeBot:
         self.mastodon_clients_visibility = {}
         self.tg_mstdn_mappings = {}
         for acc in cfg["mastodon"]["accounts"]:
-            mastodon_client = Mastodon(
+            mastodon_client = await atoot.MastodonAPI.create(
                 client_id=acc["client_id"],
                 client_secret=acc["client_secret"],
                 access_token=acc["access_token"],
-                api_base_url=acc["api_base_url"]
+                instance=acc["api_base_url"]
             )
             self.mastodon_clients[acc["name"]] = mastodon_client
             try: 
@@ -44,6 +46,7 @@ class BridgeBot:
 
         self.tg_client = TelegramClient(cfg["telegram"]["session_file"], cfg["telegram"]["api_id"],
                                         cfg["telegram"]["api_hash"])
+        return self
 
     async def run(self):
         await self.tg_client.connect()
@@ -96,7 +99,7 @@ class BridgeBot:
                         long_post_tail = "\n\n[Откройте пост по ссылке или прочитайте продолжение в обсуждении]"
                         mstdn_post_size = mstdn_post_size - len(long_post_tail)
                         reply_start = full_text.rfind(' ', reply_start, mstdn_post_size)
-                        post_text: str =  tg_message_url + full_text[0:reply_start] + long_post_tail
+                        post_text = tg_message_url + full_text[0:reply_start] + long_post_tail
                     logging.debug("start reply_start: " + str(reply_start))
                     temp_file_path: str = ""
                     # Downloading media if tg post contains it
@@ -115,11 +118,15 @@ class BridgeBot:
                         current_mstdn_acc_visibility = self.mastodon_clients_visibility[mstdn_acc_name]
                         # Attach media if tg post contains it
                         if temp_file_path != "":
-                          mstdn_media_meta = current_mastodon_client.media_post(temp_file_path)
+                          mstdn_media_meta = await current_mastodon_client.upload_attachment(open(temp_file_path, 'rb'))
                         else:
                           mstdn_media_meta = None
                         # First root mstdn post
-                        reply_to = current_mastodon_client.status_post(post_text, media_ids=[mstdn_media_meta], visibility=current_mstdn_acc_visibility)
+                        if mstdn_media_meta != None:
+                            media_ids = [mstdn_media_meta["id"]]
+                        else:
+                            media_ids = None
+                        reply_to = await current_mastodon_client.create_status(status=post_text, media_ids=media_ids, visibility=current_mstdn_acc_visibility)
                         tg_message_url = f"[Продолжение https://t.me/{channel.username}/" + str(event.message.id) + "]\n\n"
                         # Chunking post into mstdn limit chunks and reply to root post
                         emergency_break = 0
@@ -130,8 +137,8 @@ class BridgeBot:
                             if reply_end == reply_start:
                               reply_end = reply_start + mstdn_post_limit - len(tg_message_url)*2
                             logging.debug("while reply_end:" + str(reply_end))
-                            post_text: str =  tg_message_url + full_text[reply_start+1:reply_end]
-                            reply_to = current_mastodon_client.status_post(post_text, in_reply_to_id=reply_to, visibility=current_mstdn_acc_visibility)
+                            post_text =  tg_message_url + full_text[reply_start+1:reply_end]
+                            reply_to = await current_mastodon_client.create_status(status=post_text, in_reply_to_id=reply_to["id"], visibility=current_mstdn_acc_visibility)
                             reply_start = reply_end
                             # Emergency break for long or endlessly looped posts
                             emergency_break = emergency_break + 1
@@ -141,8 +148,8 @@ class BridgeBot:
                         # Final chunk to reply to root post
                         if reply_start > 0:
                             logging.debug("final reply_start: " + str(reply_start))
-                            post_text: str =  tg_message_url + full_text[reply_start+1:full_text_size]
-                            reply_to = current_mastodon_client.status_post(post_text, in_reply_to_id=reply_to, visibility=current_mstdn_acc_visibility)
+                            post_text = tg_message_url + full_text[reply_start+1:full_text_size]
+                            reply_to = await current_mastodon_client.create_status(status=post_text, in_reply_to_id=reply_to["id"], visibility=current_mstdn_acc_visibility)
                     # Delete media attach
                     if temp_file_path != "":
                         os.remove(temp_file_path)
@@ -154,5 +161,5 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     config: dict = toml.loads(open(args.config, "r").read())
-    bot = BridgeBot(config)
+    bot = asyncio.get_event_loop().run_until_complete(BridgeBot(config))
     asyncio.get_event_loop().run_until_complete(bot.run())
